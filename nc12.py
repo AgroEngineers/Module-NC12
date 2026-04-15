@@ -165,4 +165,6 @@ class Nc12(ASMHardware):
                     {}
                 ]
             }),
-            [])
+            [],
+            []
+        )
