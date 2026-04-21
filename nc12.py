@@ -7,7 +7,8 @@ import numpy
 import serial
 import serial.tools.list_ports
 from asm.api.base import ContainerParameterResults, \
-    ModuleInformation, ModuleConfiguration, ModuleConfigurationPattern, ModuleTask, ModuleTaskInput, ModuleTaskOutput
+    ModuleInformation, ModuleConfiguration, ModuleConfigurationPattern, ModuleTask, ModuleTaskInput, ModuleTaskOutput, \
+    ModuleRequirement
 from asm.api.hardware import ASMHardware, AvailableDevices
 
 
@@ -26,7 +27,7 @@ class Direction(Enum):
 class Nc12(ASMHardware):
     NAME: str = 'NC12'
     VERSION: str = '2.0'
-    BAUD_RATE: str = '115200'
+    BAUD_RATE: int = 115200
 
     CONFIGURATION: Dict[str, ModuleConfigurationPattern]
 
@@ -45,7 +46,7 @@ class Nc12(ASMHardware):
 
         for port in serial.tools.list_ports.comports():
             if "USB" in port.device:
-                port.append(port.device)
+                ports.append(port.device)
 
         for path in Path("/dev/").glob("video*"):
             cameras.append(str(path.absolute()))
@@ -71,7 +72,7 @@ class Nc12(ASMHardware):
         self.ACTIVE_MACHINE.write(str({
             "servos": self.CONFIGURATION["servos"],
             "motors": self.CONFIGURATION["motors"]
-        }))
+        }).encode('utf-8'))
 
         return True
 
@@ -92,7 +93,7 @@ class Nc12(ASMHardware):
         return frame
 
     def set_direction(self, direction: str) -> None:
-        self.ACTIVE_MACHINE.write(str({"direction": Direction[direction].value}))
+        self.ACTIVE_MACHINE.write(str({"direction": Direction[direction].value}).encode('utf-8'))
 
     def set_container(self, container: int) -> None:
         current_container = self.CONFIGURATION["containers"][container]
@@ -110,7 +111,7 @@ class Nc12(ASMHardware):
         return self.CURRENT_STATES
 
     def set_gate(self, gate: int, state: str) -> None:
-        self.ACTIVE_MACHINE.write(str({"gate": gate, "angle": GateStates[state].value, "inverted": bool(self.CONFIGURATION["servos"][gate]["inverted"])}))
+        self.ACTIVE_MACHINE.write(str({"gate": gate, "angle": GateStates[state].value, "inverted": bool(self.CONFIGURATION["servos"][gate].get("inverted", False))}).encode('utf-8'))
         self.CURRENT_STATES[gate] = state
 
     def canvas(self) -> str:
@@ -167,7 +168,5 @@ class Nc12(ASMHardware):
                     },
                     {}
                 ]
-            }),
-            [],
-            []
+            })
         )
