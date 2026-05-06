@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from enum import Enum
 from pathlib import Path
 from typing import Union, Dict, Optional
@@ -12,7 +13,7 @@ import serial.tools.list_ports
 from asm.api.base import ContainerParameterResults, \
     ModuleInformation, ModuleConfiguration, ModuleConfigurationPattern, ModuleTask, ModuleTaskInput, ModuleTaskOutput
 from asm.api.hardware import ASMHardware, AvailableDevices
-
+from asm import logman
 
 class GateStates(Enum):
     OPEN = "open"
@@ -69,24 +70,47 @@ class Nc12(ASMHardware):
             return False
         return True
 
+    def read_serial_thread(self, ser_obj):
+        while ser_obj.is_open:
+            try:
+                if ser_obj.in_waiting > 0:
+                    line = ser_obj.readline().decode('utf-8', errors='replace').strip()
+                    if line:
+                        logman.log(f"Data from serial: {line}")
+            except Exception as e:
+                logman.log(f"Serial Error: {e}")
+                break
+
     async def connect_machine(self, port: str) -> bool:
+        print(port)
         self.ACTIVE_MACHINE = serial.Serial(port, self.BAUD_RATE)
+        
+        thread = threading.Thread(target=self.read_serial_thread, args=(self.ACTIVE_MACHINE,), daemon=True)
+        thread.start()
 
         if not self.ACTIVE_MACHINE.is_open:
             return False
 
         for gate in range(len(self.CONFIGURATION["servos"])):
-            self.CURRENT_STATES.update({gate: GateStates.OPEN.name})
-
-        with self._lock:
-            self.ACTIVE_MACHINE.write(json.dumps({
-                "servos": self.CONFIGURATION["servos"],
-                "motors": self.CONFIGURATION["motors"]
-            }).encode('utf-8'))
+            self.CURRENT_STATES.update({gate: GateStates.OPEN.value})
+        
+        time.sleep(2)
+        # Sorry for hardcode, I haven't time to fix it
+        # TODO: Remove hardcode
+        
+        self.ACTIVE_MACHINE.write((json.dumps({
+            "task": "motors",
+            "motors":[[7,4,5],[3,2,6]]
+        }) + "\n").encode('utf-8'))
+        time.sleep(0.2)
+        self.ACTIVE_MACHINE.write((json.dumps({
+            "task": "servos",
+            "servos": [1, 2, 3]
+        }) + "\n").encode('utf-8'))
 
         for servo in self.CONFIGURATION["servos"]:
-            self.CURRENT_STATES[servo["port"]] = GateStates.OPEN.name
-            self.set_gate(servo["port"], GateStates.OPEN.value)
+            self.set_gate(servo["port"]-1, GateStates.OPEN.value)
+            time.sleep(1.5)
 
         return True
 
@@ -121,17 +145,25 @@ class Nc12(ASMHardware):
     def set_direction(self, direction: str) -> None:
         with self._lock:
             self.ACTIVE_MACHINE.write(
-                json.dumps({"task": "direction", "direction": Direction[direction].value}).encode('utf-8'))
+                json.dumps({"task": "direction", "direction": Direction[direction.upper()].value}).encode('utf-8'))
 
+    
     def set_container(self, container: int) -> dict:
         current_container = self.CONFIGURATION["containers"][container - 1]
 
         ress = {
             "type": "sync",
-            "motor": self.get_forward_direction()
+            "motor": self.get_forward_direction().lower()
         }
+
+        self.set_direction(self.get_forward_direction())
+
+        for i in range(len(self.CONFIGURATION["servos"])):
+            self.set_gate(i, "open")
+            time.sleep(0.05)
+
         for gate, state in current_container.items():
-            self.set_gate(int(gate), state.lower())
+            self.set_gate(int(gate)-1, state.lower())
             ress.update({f"servo_{gate}": state.lower()})
 
         return ress
@@ -147,7 +179,9 @@ class Nc12(ASMHardware):
 
     def _get_angle_by_state(self, gate: int, state: str) -> int:
         for servo in self.CONFIGURATION["servos"]:
-            if servo.get("port") == gate:
+            if servo.get("port") == gate+1:
+                if state == "None" or state is None:
+                    return servo["states"]["open"] 
                 if "states" not in servo:
                     raise ValueError(f"Servo {gate} has no 'states': {servo}")
                 if state not in servo["states"]:
@@ -158,15 +192,15 @@ class Nc12(ASMHardware):
         raise ValueError(f"Gate {gate} not found")
 
     def set_gate(self, gate: int, state: str) -> None:
-
-        with self._lock:
-            self.ACTIVE_MACHINE.write(
-                json.dumps({
-                    "task": "gate",
-                    "gate": gate,
-                    "angle": self._get_angle_by_state(gate, state)
-                }).encode('utf-8')
-            )
+        logman.log(f"Gate: {gate}, state: {state}")
+        
+        self.ACTIVE_MACHINE.write(
+            (json.dumps({
+                "task": "gate",
+                "gate": gate,
+                "angle": self._get_angle_by_state(gate, state)
+            }) + "\n").encode('utf-8')
+        )
 
         self.CURRENT_STATES[gate] = state
 
